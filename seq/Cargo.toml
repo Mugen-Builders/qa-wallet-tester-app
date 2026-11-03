@@ -1,0 +1,30 @@
+# qa-wallet sequencer crates. `guest` is the scheduler fold linked into the machine binary
+# (qa-wallet-seq, see src/seq_main.cpp); `host` is the sequencer binary with libqawallet linked
+# through the application-engine C ABI. Both pin the Cartesi sequencer at one tag.
+[workspace]
+resolver = "2"
+members = ["guest", "host"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+sequencer-core = { git = "https://github.com/cartesi/sequencer", tag = "v0.1.0-alpha.10" }
+c-app-engine = { git = "https://github.com/cartesi/sequencer", tag = "v0.1.0-alpha.10" }
+c-app-sequencer = { git = "https://github.com/cartesi/sequencer", tag = "v0.1.0-alpha.10" }
+alloy-primitives = { version = "1.6", features = ["k256"] }
+alloy-sol-types = "1.6"
+ssz = { package = "ethereum_ssz", version = "0.10" }
+k256 = "0.13.4"
+tokio = "1.53"
+
+# The machine binary: never unwind into the C++ driver (a panic halts the machine, like
+# canonical-app) and squeeze the static archive. The host keeps `release` (the sequencer's command
+# harness relies on catch_unwind).
+[profile.guest]
+inherits = "release"
+panic = "abort"
+lto = "fat"
+codegen-units = 1

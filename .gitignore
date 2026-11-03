@@ -1,0 +1,14 @@
+build/
+third-party/
+.cartesi/
+qa-wallet-snapshot.tar.gz
+qa-wallet-app.sqfs
+.docker-shim.*
+__pycache__/
+.pytest_cache/
+seq/target/
+seq/config-devnet.bin
+qa-wallet-seq-*.tar.gz
+qa-wallet-seq-*.sqfs
+qa-wallet-sequencer-linux-*.tar.gz
+*.sha256

@@ -1,0 +1,21 @@
+[package]
+name = "qawallet-seq-guest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Canonical scheduler fold over the qa-wallet engine (application-engine C ABI), exported as a C static library for the machine binary"
+
+[lib]
+# staticlib: what the riscv64 Alpine link consumes (build/guest/seq/libqawallet_seq_guest.a).
+# rlib: lets the host tests link the same code.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+sequencer-core = { workspace = true }
+c-app-engine = { workspace = true }
+alloy-primitives = { workspace = true }
+
+[dev-dependencies]
+ssz = { workspace = true }
+alloy-sol-types = { workspace = true }
+k256 = { workspace = true }
