@@ -1,0 +1,261 @@
+name: build-and-release
+run-name: Testing and Releasing the QA wallet application
+on: [push, workflow_dispatch]
+
+# Pins (override with repository variables of the same name):
+#   EMULATOR_VERSION 0.22.0, MACHINE_LINUX_VERSION 0.21.0, KERNEL_VERSION 6.5.13-ctsi-2,
+#   XGENEXT2_VERSION 1.5.6-1, CARTESI_CLI_VERSION 2.0.0-alpha.38, FOUNDRY_VERSION v1.4.3,
+#   RUST_VERSION 1.95.0 (seq/rust-toolchain.toml; the Cartesi sequencer v0.1.0-alpha.10 pin)
+# Foundry's `cast` encodes every ledger test input (docs/inputs.md); the CLI builds, boots and stores the
+# templates with the NVRAMs declared in cartesi.toml / cartesi-seq.toml (docs/build.md,
+# docs/sequencer.md). Both variants share .cartesi/, so the classic image is archived before the
+# sequencer build runs. The devnet kit (docs/sequencer-kit.md) is packed at the end.
+jobs:
+  host-tests:
+    # libqawallet against the libcmt mock and libcma built from source: no machine needed.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++-14 make git curl jq xxd libclang-dev cmake pkg-config
+
+      - name: Install Rust (the sequencer crates)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ vars.RUST_VERSION || '1.95.0' }}
+          targets: riscv64gc-unknown-linux-musl
+
+      - name: Install Foundry (cast encodes the mock e2e inputs)
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: ${{ vars.FOUNDRY_VERSION || 'v1.4.3' }}
+
+      - name: Build dependencies (machine-guest-tools, machine-asset-tools, devnet state, crates)
+        run: make deps seq-deps CXX=g++-14 CC=gcc-14
+
+      - name: Unit tests and mock-rollup e2e
+        run: make host-test CXX=g++-14
+
+      - name: Sequencer host binary and fold tests (docs/sequencer.md)
+        run: |
+          make seq-host seq-test seq-guest-lib CXX=g++-14
+          seq/target/release/qa-wallet-sequencer --help | head -3
+          build/host/qa-wallet-genesis --help || true
+
+      - name: Package the host binaries
+        run: |
+          mkdir -p dist && cp seq/target/release/qa-wallet-sequencer build/host/qa-wallet-genesis dist/
+          tar -C dist -czf qa-wallet-sequencer-linux-amd64.tar.gz qa-wallet-sequencer qa-wallet-genesis
+          sha256sum qa-wallet-sequencer-linux-amd64.tar.gz > qa-wallet-sequencer-linux-amd64.tar.gz.sha256
+
+      - name: Upload host binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: qa-wallet-sequencer-host
+          path: |
+            qa-wallet-sequencer-linux-amd64.tar.gz
+            qa-wallet-sequencer-linux-amd64.tar.gz.sha256
+          retention-days: 2
+
+  build-and-test:
+    runs-on: ubuntu-24.04
+    environment: Main
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Cartesi Machine
+        run: |
+          curl -s -L https://cartesi.github.io/linux-packages/apt/keys/cartesi-deb-key.gpg.bin | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/cartesi-deb-key.gpg
+          curl -s -L https://cartesi.github.io/linux-packages/apt/stable/sources.list | sudo tee /etc/apt/sources.list.d/cartesi-deb-apt.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends squashfs-tools g++-14 jq xxd libclang-dev cmake pkg-config \
+            xgenext2fs=${{ vars.XGENEXT2_VERSION || '1.5.6-1' }}
+
+          curl -fsSL -o ${{ runner.temp }}/cartesi-machine.deb https://github.com/cartesi/machine-emulator/releases/download/v${{ vars.EMULATOR_VERSION || '0.22.0' }}/machine-emulator_amd64.deb
+          sudo apt-get install -y --no-install-recommends ${{ runner.temp }}/cartesi-machine.deb
+
+          curl -fsSL -o ${{ runner.temp }}/linux.bin https://github.com/cartesi/machine-linux-image/releases/download/v${{ vars.MACHINE_LINUX_VERSION || '0.21.0' }}/linux-${{ vars.KERNEL_VERSION || '6.5.13-ctsi-2' }}-v${{ vars.MACHINE_LINUX_VERSION || '0.21.0' }}.bin
+          curl -fsSL -o ${{ runner.temp }}/linux.bin.sha512 https://github.com/cartesi/machine-linux-image/releases/download/v${{ vars.MACHINE_LINUX_VERSION || '0.21.0' }}/linux-${{ vars.KERNEL_VERSION || '6.5.13-ctsi-2' }}-v${{ vars.MACHINE_LINUX_VERSION || '0.21.0' }}.bin.sha512
+
+      - name: Check RAM image
+        working-directory: ${{ runner.temp }}
+        run: |
+          echo "$(cut -d' ' -f1 linux.bin.sha512)  linux.bin" | sha512sum -c -
+          sudo mkdir -p /usr/share/cartesi-machine/images
+          sudo cp linux.bin /usr/share/cartesi-machine/images/linux.bin
+          ls -l /usr/share/cartesi-machine/images/linux.bin
+
+      - name: Check Cartesi Machine
+        run: |
+          cartesi-machine --version
+          xgenext2fs --version
+          mksquashfs -version | head -1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.x"
+
+      - name: Install Cartesi Machine and Linux image
+        run: |
+          curl -fsSL -o ${{ runner.temp }}/cartesi-machine.deb https://github.com/cartesi/machine-emulator/releases/download/v${{ vars.EMULATOR_VERSION || '0.22.0' }}/machine-emulator_amd64.deb
+          sudo apt-get install -y --no-install-recommends ${{ runner.temp }}/cartesi-machine.deb
+          cartesi-machine --version
+
+          curl -fsSL -o ${{ runner.temp }}/linux.bin https://github.com/cartesi/machine-linux-image/releases/download/v${{ vars.MACHINE_LINUX_VERSION || '0.21.0' }}/linux-${{ vars.KERNEL_VERSION || '6.5.13-ctsi-2' }}-v${{ vars.MACHINE_LINUX_VERSION || '0.21.0' }}.bin
+          curl -fsSL -o ${{ runner.temp }}/linux.bin.sha512 https://github.com/cartesi/machine-linux-image/releases/download/v${{ vars.MACHINE_LINUX_VERSION || '0.21.0' }}/linux-${{ vars.KERNEL_VERSION || '6.5.13-ctsi-2' }}-v${{ vars.MACHINE_LINUX_VERSION || '0.21.0' }}.bin.sha512
+
+      - name: Install Cartesapp
+        run: |
+          pip3 install cartesapp[dev]@git+https://github.com/prototyp3-dev/cartesapp@v1.5.0a0
+          cartesapp --version
+
+      - name: Install Foundry (cast encodes the machine test inputs)
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: ${{ vars.FOUNDRY_VERSION || 'v1.4.3' }}
+
+      - name: Install Rust (the sequencer host binary for the e2e test)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ vars.RUST_VERSION || '1.95.0' }}
+
+      - name: Host binaries (qa-wallet-genesis, qa-wallet-sequencer) and the devnet state
+        run: |
+          make deps seq-deps CXX=g++-14 CC=gcc-14
+          make host seq-host CXX=g++-14
+
+      - name: Build drives, boot and store the classic template (with the state NVRAMs)
+        run: |
+          cartesapp build --log-level debug --machine-config "ram_image=${{ runner.temp }}/linux.bin"
+
+      - name: Template hash and flash drives
+        run: |
+          cartesi-machine-stored-hash .cartesi/image/
+          sha256sum .cartesi/root.ext2 .cartesi/app.sqfs
+
+      - name: Check the accounts-drive start index (docs/build.md)
+        run: |
+          start=$(jq -r '(.config // .).nvram[] | select(.label == "state") | .start' .cartesi/image/config.json)
+          index=$(grep -oP 'accounts_drive_start_index\s*=\s*\K\d+' cartesi.toml)
+          printf 'state NVRAM start %#x -> accounts_drive_start_index %d (cartesi.toml: %d)\n' "$start" $((start >> 22)) "$index"
+          test $((start >> 22)) -eq "$index"
+
+      - name: Machine tests (classic)
+        run: |
+          pip3 install --user pytest
+          python3 -m pytest tests/machine -v
+
+      - name: Create the classic artifact archive
+        run: |
+          cd .cartesi/image && tar -czf ../../qa-wallet-snapshot.tar.gz * && cd ../..
+          sha256sum qa-wallet-snapshot.tar.gz > qa-wallet-snapshot.tar.gz.sha256
+          cp .cartesi/app.sqfs qa-wallet-app.sqfs
+          sha256sum qa-wallet-app.sqfs > qa-wallet-app.sqfs.sha256
+
+      # ---------------------------------------------------------------- sequencer variant
+      - name: Build, boot and store the sequencer template (docs/sequencer.md)
+        # the classic image shares .cartesi/; it was archived above
+        run: |
+          rm -rf .cartesi/image
+          make seq-image
+          cartesapp build --config-file cartesi-seq.toml --log-level debug --machine-config "ram_image=${{ runner.temp }}/linux.bin"
+          cartesi-machine-stored-hash .cartesi/image/
+          sha256sum .cartesi/app.sqfs
+
+      - name: Check the ranges (state index 560, config range after the state)
+        run: |
+          start=$(jq -r '(.config // .).nvram[] | select(.label == "state") | .start' .cartesi/image/config.json)
+          index=$(grep -oP 'accounts_drive_start_index\s*=\s*\K\d+' cartesi-seq.toml)
+          cfgstart=$(jq -r '(.config // .).nvram[] | select(.label == "config") | .start' .cartesi/image/config.json)
+          printf 'state %#x -> index %d (cartesi-seq.toml: %d); config range at %#x\n' "$start" $((start >> 22)) "$index" "$cfgstart"
+          test $((start >> 22)) -eq "$index"
+
+      - name: Cycle-0 image reproduces the template
+        run: |
+          make seq-cycle0
+          cartesi-machine --load=build/seq/cycle0 --assert-rolling-template --final-hash --store=build/seq/verify 2>&1 | tee build/seq/verify.log
+          booted=$(grep -oE '[0-9a-f]{64}' build/seq/verify.log | tail -1)
+          stored=$(cartesi-machine-stored-hash .cartesi/image | sed 's/^0x//')
+          echo "booted cycle-0: $booted"; echo "cartesi build:  $stored"
+          test "$booted" = "$stored"
+
+      - name: Machine tests (sequencer)
+        run: python3 -m pytest tests/machine/test_seq_machine.py -v
+
+      - name: End-to-end test (anvil, host sequencer, machine replay)
+        run: python3 -m pytest tests/sequencer -v
+
+      - name: Create the sequencer artifact archives
+        run: |
+          cd .cartesi/image && tar -czf ../../qa-wallet-seq-genesis-devnet.tar.gz * && cd ../..
+          cd build/seq/cycle0 && tar -czf ../../../qa-wallet-seq-cycle0.tar.gz * && cd ../../..
+          cp .cartesi/app.sqfs qa-wallet-seq-app.sqfs
+          sha256sum qa-wallet-seq-genesis-devnet.tar.gz > qa-wallet-seq-genesis-devnet.tar.gz.sha256
+          sha256sum qa-wallet-seq-cycle0.tar.gz > qa-wallet-seq-cycle0.tar.gz.sha256
+          sha256sum qa-wallet-seq-app.sqfs > qa-wallet-seq-app.sqfs.sha256
+
+      - name: Package the devnet kit (docs/sequencer-kit.md)
+        run: |
+          make seq-kit
+          cp build/qa-wallet-seq-devnet-linux-x86_64.tar.gz build/qa-wallet-seq-devnet-linux-x86_64.tar.gz.sha256 .
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: qa-wallet-snapshot
+          path: |
+            qa-wallet-snapshot.tar.gz
+            qa-wallet-snapshot.tar.gz.sha256
+            qa-wallet-app.sqfs
+            qa-wallet-app.sqfs.sha256
+            qa-wallet-seq-genesis-devnet.tar.gz
+            qa-wallet-seq-genesis-devnet.tar.gz.sha256
+            qa-wallet-seq-cycle0.tar.gz
+            qa-wallet-seq-cycle0.tar.gz.sha256
+            qa-wallet-seq-app.sqfs
+            qa-wallet-seq-app.sqfs.sha256
+            qa-wallet-seq-devnet-linux-x86_64.tar.gz
+            qa-wallet-seq-devnet-linux-x86_64.tar.gz.sha256
+          retention-days: 30
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [host-tests, build-and-test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          find artifacts -name "*.tar.gz" -exec cp {} release-assets/ \;
+          find artifacts -name "*.sqfs" -exec cp {} release-assets/ \;
+          find artifacts -name "*.sha256" -exec cp {} release-assets/ \;
+          ls -la release-assets/
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v3
+        with:
+          prerelease: true
+          files: release-assets/*
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
