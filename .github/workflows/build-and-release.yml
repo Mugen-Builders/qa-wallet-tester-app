@@ -169,7 +169,6 @@ jobs:
         # the classic image shares .cartesi/; it was archived above
         run: |
           rm -rf .cartesi/image
-          make seq-image
           cartesapp build --config-file cartesi-seq.toml --log-level debug --machine-config "ram_image=${{ runner.temp }}/linux.bin"
           cartesi-machine-stored-hash .cartesi/image/
           sha256sum .cartesi/app.sqfs
