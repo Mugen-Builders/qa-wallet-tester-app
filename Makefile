@@ -178,8 +178,8 @@ LINUX_BIN ?= /usr/share/cartesi-machine/images/linux.bin
 SEQ_CYCLE0_FILTER := (.config // .) | {dtb: {bootargs: .dtb.bootargs, init: .dtb.init, entrypoint: .dtb.entrypoint}, ram: {length: .ram.length, backing_store: {data_filename: $$linux}}, flash_drive: (.flash_drive | map({label, start, length, read_only, backing_store: {data_filename: ($$root + "/" + .label + (if .label == "root" then ".ext2" else ".sqfs" end))}})), nvram: (.nvram | map({label, start, length, read_only} + (if .label == "config" then {backing_store: {data_filename: ($$root + "/config.raw")}} else {} end)))}
 seq-cycle0:
 	@mkdir -p build/seq && rm -rf $(SEQ_CYCLE0)
+	[ ! -f ".cartesi/config.raw" ] && [ -f ".cartesi/config.bin" ] && ln -sr .cartesi/config.bin .cartesi/config.raw || echo "config.raw found"
 	jq --arg root "$(abspath .cartesi)" --arg linux "$(LINUX_BIN)" '$(SEQ_CYCLE0_FILTER)' .cartesi/image/config.json > build/seq/cycle0.json
-	[ -f ".cartesi/config.bin" ] ln -sr .cartesi/config.bin .cartesi/config.raw
 	cartesi-machine --load-config=build/seq/cycle0.json,format:json --max-mcycle=0 --initial-hash --store=$(SEQ_CYCLE0)
 
 # ---------------------------------------------------------------------------- devnet kit
