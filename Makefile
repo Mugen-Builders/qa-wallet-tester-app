@@ -179,6 +179,7 @@ SEQ_CYCLE0_FILTER := (.config // .) | {dtb: {bootargs: .dtb.bootargs, init: .dtb
 seq-cycle0:
 	@mkdir -p build/seq && rm -rf $(SEQ_CYCLE0)
 	jq --arg root "$(abspath .cartesi)" --arg linux "$(LINUX_BIN)" '$(SEQ_CYCLE0_FILTER)' .cartesi/image/config.json > build/seq/cycle0.json
+	[ -f ".cartesi/config.bin" ] ln -sr .cartesi/config.bin .cartesi/config.raw
 	cartesi-machine --load-config=build/seq/cycle0.json,format:json --max-mcycle=0 --initial-hash --store=$(SEQ_CYCLE0)
 
 # ---------------------------------------------------------------------------- devnet kit
