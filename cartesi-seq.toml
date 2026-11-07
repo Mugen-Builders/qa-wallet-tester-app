@@ -55,6 +55,7 @@ user = "dapp"
 # seq/config-devnet.bin` writes the devnet one (anvil account 9, TestUsdc); a deployment replaces
 # this range in the cycle-0 image (docs/sequencer.md).
 [nvrams.config]
+builder = "none"
 size = "4Ki"
 user = "dapp"
 filename = "seq/config-devnet.bin"
