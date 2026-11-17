@@ -7,6 +7,7 @@
 #
 # Sequencer variant (docs/sequencer.md):
 #   make seq-host        the sequencer binary with libqawallet linked (seq/host, cargo + libclang + cmake)
+#   make seq-inspect     the inspect follower of that sequencer (seq/inspect); seq-inspect-test runs its tests
 #   make seq-test        cargo tests of the scheduler fold over the C seam (fee port, batches, user ops)
 #   make seq-guest-lib   cross-builds the fold staticlib for riscv64 on the host (the Dockerfile does the same)
 #   make seq-image       `cartesi build -c cartesi-seq.toml`
@@ -151,6 +152,15 @@ seq-host: $(host_ENGINE_LIB)
 seq-test: $(host_ENGINE_LIB)
 	QAWALLET_LIB_DIR=$(abspath $(host_OBJDIR)) cargo test --locked --manifest-path $(SEQ_MANIFEST) -p qawallet-seq-guest
 
+# The inspect follower (docs/sequencer.md): the same engine archive behind the same seam, kept
+# current from the sequencer's feed.
+SEQ_INSPECT_BIN := seq/target/release/qa-wallet-inspect
+seq-inspect: $(host_ENGINE_LIB)
+	$(SEQ_ENGINE_ENV) cargo build --locked --release --manifest-path $(SEQ_MANIFEST) -p qawallet-seq-inspect
+
+seq-inspect-test: $(host_ENGINE_LIB)
+	$(SEQ_ENGINE_ENV) cargo test --locked --manifest-path $(SEQ_MANIFEST) -p qawallet-seq-inspect
+
 # bindgen parses application-engine.h for the riscv64 target on the build host: it only needs
 # <stdint.h>, served from seq/guest/bindgen-include so no host libc header is involved.
 BINDGEN_RISCV_ARGS ?= -nostdinc -isystem $(abspath seq/guest/bindgen-include)
@@ -186,13 +196,13 @@ seq-cycle0:
 # One archive with everything an anvil-based test of the sequencer variant needs: the host
 # binaries, the devnet genesis image and the cycle-0 image, the host genesis dump, the config
 # range, the devnet anvil state and addresses, and the instructions (docs/sequencer-kit.md).
-# Needs `make seq-host seq-image seq-cycle0` first (the image is read from SEQ_IMAGE).
+# Needs `make seq-host seq-inspect seq-image seq-cycle0` first (the image is read from SEQ_IMAGE).
 SEQ_IMAGE ?= .cartesi/image
 SEQ_KIT := qa-wallet-seq-devnet-linux-$(ARCH)
 SEQ_KIT_DIR := build/$(SEQ_KIT)
 seq-kit: seq/config-devnet.bin
 	rm -rf $(SEQ_KIT_DIR) && mkdir -p $(SEQ_KIT_DIR)/bin $(SEQ_KIT_DIR)/image $(SEQ_KIT_DIR)/config $(SEQ_KIT_DIR)/state $(SEQ_KIT_DIR)/devnet
-	cp $(SEQ_HOST_BIN) $(host_GENESIS) $(SEQ_KIT_DIR)/bin/
+	cp $(SEQ_HOST_BIN) $(SEQ_INSPECT_BIN) $(host_GENESIS) $(SEQ_KIT_DIR)/bin/
 	cp -r $(SEQ_IMAGE) $(SEQ_KIT_DIR)/image/genesis-devnet
 	cp -r $(SEQ_CYCLE0) $(SEQ_KIT_DIR)/image/cycle0
 	cartesi-machine-stored-hash $(SEQ_IMAGE) > $(SEQ_KIT_DIR)/image/template-hash.txt
@@ -210,4 +220,4 @@ seq-kit: seq/config-devnet.bin
 clean:
 	rm -rf build
 
-.PHONY: all guest guest-seq host host-test deps seq-deps image clean seq-host seq-test seq-guest-lib seq-image seq-cycle0 seq-kit
+.PHONY: all guest guest-seq host host-test deps seq-deps image clean seq-host seq-test seq-inspect seq-inspect-test seq-guest-lib seq-image seq-cycle0 seq-kit

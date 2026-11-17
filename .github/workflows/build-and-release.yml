@@ -39,16 +39,17 @@ jobs:
       - name: Unit tests and mock-rollup e2e
         run: make host-test CXX=g++-14
 
-      - name: Sequencer host binary and fold tests (docs/sequencer.md)
+      - name: Sequencer host binary, inspect follower and fold tests (docs/sequencer.md)
         run: |
-          make seq-host seq-test seq-guest-lib CXX=g++-14
+          make seq-host seq-test seq-inspect seq-inspect-test seq-guest-lib CXX=g++-14
           seq/target/release/qa-wallet-sequencer --help | head -3
+          seq/target/release/qa-wallet-inspect --help | head -3
           build/host/qa-wallet-genesis --help || true
 
       - name: Package the host binaries
         run: |
-          mkdir -p dist && cp seq/target/release/qa-wallet-sequencer build/host/qa-wallet-genesis dist/
-          tar -C dist -czf qa-wallet-sequencer-linux-amd64.tar.gz qa-wallet-sequencer qa-wallet-genesis
+          mkdir -p dist && cp seq/target/release/qa-wallet-sequencer seq/target/release/qa-wallet-inspect build/host/qa-wallet-genesis dist/
+          tar -C dist -czf qa-wallet-sequencer-linux-amd64.tar.gz qa-wallet-sequencer qa-wallet-inspect qa-wallet-genesis
           sha256sum qa-wallet-sequencer-linux-amd64.tar.gz > qa-wallet-sequencer-linux-amd64.tar.gz.sha256
 
       - name: Upload host binaries
@@ -131,10 +132,10 @@ jobs:
         with:
           toolchain: ${{ vars.RUST_VERSION || '1.95.0' }}
 
-      - name: Host binaries (qa-wallet-genesis, qa-wallet-sequencer) and the devnet state
+      - name: Host binaries (qa-wallet-genesis, qa-wallet-sequencer, qa-wallet-inspect) and the devnet state
         run: |
           make deps seq-deps CXX=g++-14 CC=gcc-14
-          make host seq-host CXX=g++-14
+          make host seq-host seq-inspect CXX=g++-14
 
       - name: Build drives, boot and store the classic template (with the state NVRAMs)
         run: |
@@ -194,7 +195,7 @@ jobs:
       - name: Machine tests (sequencer)
         run: python3 -m pytest tests/machine/test_seq_machine.py -v
 
-      - name: End-to-end test (anvil, host sequencer, machine replay)
+      - name: End-to-end tests (anvil, host sequencer, inspect follower, machine replay)
         run: python3 -m pytest tests/sequencer -v
 
       - name: Create the sequencer artifact archives

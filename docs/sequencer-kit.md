@@ -7,6 +7,7 @@ every step below is a stock tool invocation.
 
 ```
 bin/qa-wallet-sequencer      the host sequencer with libqawallet linked in (linux, glibc, dynamic libstdc++)
+bin/qa-wallet-inspect        follows a running sequencer and answers inspects from its soft state
 bin/qa-wallet-genesis        writes a host genesis state for a batch submitter and a token
 image/genesis-devnet/        the stored machine booted to its first yield with the devnet config: the template
 image/template-hash.txt      its hash (what the application is deployed with)
@@ -84,6 +85,14 @@ curl -s http://127.0.0.1:3000/readyz; curl -s http://127.0.0.1:3000/history | jq
 The engine reads its `QA_*` configuration (portal addresses, sizes) from the environment the way
 the machine reads `[machine.env]`; the defaults are the devnet values, so leave `QA_*` unset. The
 submitter and the token come from the genesis dump.
+
+For inspects against the sequencer's soft-confirmed state, run the follower next to it (it restores
+the sequencer's latest snapshot and applies its feed; nothing to set up, nothing kept on disk):
+
+```sh
+bin/qa-wallet-inspect --sequencer-url http://127.0.0.1:3000 --http-addr 127.0.0.1:3001 &
+curl -s -X POST http://127.0.0.1:3001/inspect/$APP -d state | jq -r '.reports[0].payload' | xxd -r -p | jq .
+```
 
 ## 4. Inputs
 
@@ -166,5 +175,5 @@ A machine whose `config` range disagrees with an initialised state refuses to st
 
 ## Rebuilding the kit
 
-`make seq-host seq-image seq-cycle0 seq-kit` in the repository (docs/sequencer.md); the
+`make seq-host seq-inspect seq-image seq-cycle0 seq-kit` in the repository (docs/sequencer.md); the
 `build-and-release` GitHub workflow builds it on every push, on demand and on every `v*` tag.

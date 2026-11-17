@@ -1,9 +1,11 @@
 # qa-wallet sequencer crates. `guest` is the scheduler fold linked into the machine binary
 # (qa-wallet-seq, see src/seq_main.cpp); `host` is the sequencer binary with libqawallet linked
-# through the application-engine C ABI. Both pin the Cartesi sequencer at one tag.
+# through the application-engine C ABI; `inspect` is the follower that replays the sequencer's feed
+# into its own engine and answers inspects (docs/sequencer.md). All pin the Cartesi sequencer at
+# one tag.
 [workspace]
 resolver = "2"
-members = ["guest", "host"]
+members = ["guest", "host", "inspect"]
 
 [workspace.package]
 version = "0.1.0"

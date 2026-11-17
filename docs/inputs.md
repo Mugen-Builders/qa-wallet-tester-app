@@ -74,6 +74,10 @@ curl -s -X POST http://localhost:6751/inspect/$APP -d '{"method":"ledger_getBala
 | any other non-JSON payload | echoed back as one report (a full 2 MiB query works) |
 | any other JSON method | reject with `{"error":"unknown inspect: …"}` |
 
+With the host sequencer there is no node to ask: `qa-wallet-inspect` answers the same payloads on
+the same route from the sequencer's soft-confirmed state, always with status `Accepted` and with
+the host's `state` report ([sequencer.md](sequencer.md#inspects-against-the-sequencer-qa-wallet-inspect)).
+
 ## Sequencer variant
 
 Under the scheduler every input above is a **direct input** that executes when a batch frame

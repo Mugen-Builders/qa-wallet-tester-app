@@ -66,6 +66,7 @@ libcma's own file mode byte for byte and reopens a machine-built region on the h
 make deps seq-deps                 # pinned C libraries, the devnet anvil state, cargo fetch
 make host-test                     # engine + C seam unit tests and the mock e2e
 make seq-host                      # seq/target/release/qa-wallet-sequencer (needs libclang, cmake)
+make seq-inspect                   # seq/target/release/qa-wallet-inspect, the inspect follower (same needs)
 make seq-test                      # cargo tests of the fold over the seam (every fee exponent, batches, user ops)
 make seq-image                     # cartesi build -c cartesi-seq.toml  -> .cartesi/image (devnet genesis)
 cartesi hash                       # the devnet template hash
@@ -167,6 +168,62 @@ prints the amount for an exponent), so deposit first. `ledger_getNonce [address]
 nonce the engine expects; the `state` inspect report shows `scheduler.next_batch_nonce` and
 `scheduler.queued_directs` in the machine.
 
+### Inspects against the sequencer: `qa-wallet-inspect`
+
+The sequencer has no inspect route. `qa-wallet-inspect` (`seq/inspect`, `make seq-inspect`) is a
+separate process that follows it and answers inspects from the **soft-confirmed** state: the same
+engine archive behind the same seam, advanced with the sequencer's own inputs.
+
+```sh
+qa-wallet-inspect --sequencer-url http://127.0.0.1:3000 --http-addr 127.0.0.1:3001
+curl -s -X POST http://127.0.0.1:3001/inspect/$APP -d '{"method":"ledger_getBalance","params":["'$USER'","'$TOKEN'"]}'
+# {"status":"Accepted","exception_payload":null,"reports":[{"payload":"0x…"}],"processed_input_count":7}
+```
+
+How it works:
+
+1. It downloads `GET /latest_snapshot`, opens it with `application_engine_from_dump` (the engine
+   takes its private working copy in `QA_ENGINE_WORKDIR`; the download is deleted) and checks the
+   input count against the snapshot's `X-Executed-Input-Count`.
+2. It subscribes to `/ws/subscribe` with the snapshot's era, recovery generation and that count,
+   and applies every message as the sequencer's own restart replay does: a direct input with
+   `{sender, block_number, payload}`, a user op with `{sender, fee, data}` and its `safe_block`,
+   each through `sequencer_core`'s `execute_*` (exactly one input of progress or a panic). A user
+   op is first validated under its signed nonce; the offset must be the engine's input count.
+3. `POST /inspect/{application}` hands the raw body (up to 2 MiB) to the engine's inspect
+   (`qawallet_live_inspect`) and returns the reports in the rollups node's JSON shape.
+   `processed_input_count` is the engine's input count behind the answer.
+
+Nothing is persisted: a restart is a new snapshot. What to expect:
+
+| situation | behaviour |
+|---|---|
+| before the first snapshot is applied, and until the history the sequencer had at that moment is replayed | `503` (`/readyz` too; `/healthz` is `200` while the process runs) |
+| the socket drops, the sequencer restarts or is away | the last state keeps answering; the follower reconnects from its own input count (pings every 15 s, 45 s of silence is a dead socket) |
+| the sequencer refuses the position with `409` (it recovered and replaced soft history, the era changed, history is unavailable) | the state is discarded, `503` until a new snapshot is followed; **`processed_input_count` can go down**: answers given from the replaced suffix were about inputs that no longer exist |
+| a feed gap, a user op that does not validate, an undecodable message, an engine error, a snapshot that does not open | the state is discarded and restored; after 3 such restores in a row the process exits non-zero rather than serve a state it cannot vouch for |
+| `{application}` is not the sequencer's app address | `404` |
+| a body over 2 MiB / more than 16 inspects in flight | `413` / `429` |
+
+Differences from an inspect on the machine, all deliberate:
+
+- the answer is about the sequencer's optimistic state, ahead of what L1 has settled;
+- `state` is the host engine's report: `"state_backend":"file"` and no `scheduler` object (the
+  follower has no scheduler: queued directs are not on the feed);
+- `status` is always `Accepted`, like `qa-wallet-seq` in the machine: a rejected query (unknown
+  method, `Account not found`, bad JSON) is told by its `{"error":…}` report. The engine's
+  inspect entry does not return the completion, and the engine is not changed for this;
+- every other report is byte for byte the machine's once the same inputs are final
+  (`tests/sequencer/test_inspect_follower.py`).
+
+Configuration: `--sequencer-url` (`http://` only, like the sequencer's own client; the feed is
+`ws://` on the same address), `--http-addr` (default `127.0.0.1:3001`; the route has no
+authentication, so keep it on a trusted interface), `--work-dir` for the snapshot download (default
+`QA_ENGINE_WORKDIR`, else the system's temporary directory; during a restore it holds the archive and its unpacked
+state, about twice the state's 64 MiB, next to the engine's sparse working copy), `--max-snapshot-bytes` (default 1 GiB), each also as `QA_INSPECT_*`. The `QA_*`
+layout variables must be the sequencer's: with other sizes the snapshot does not open and the log
+says so.
+
 ### Full stack on the devnet (manual)
 
 `cartesi run -c cartesi-seq.toml --epoch-length 10 --claim-staging-period 0` brings up anvil and
@@ -193,6 +250,15 @@ not part of the automated tests (they stop at the machine replay).
   bytes; and, when `build/seq/cycle0` exists, the deployer flow (replaced `config` range with
   another submitter and token, booted to the yield, equal to `qa-wallet-genesis --sequencer …
   --token …`).
+- `make seq-inspect-test` (`seq/inspect/src/tests.rs`): feed messages execute in order and gaps,
+  malformed fields and non-validating user ops are refused; inspects leave the state untouched;
+  snapshot archives with traversal, extra, duplicate, non-regular, oversized or truncated entries
+  are refused; the follower against a stub sequencer: `503` before a state, snapshot + backlog +
+  live suffix, the route's `404`/`413`/`405`, resume after a dropped socket, and a
+  `STALE_GENERATION` refusal answered by a fresh snapshot of the replaced history.
+- `tests/sequencer/test_inspect_follower.py`: `qa-wallet-inspect` against the real sequencer: a
+  user op visible before any batch, reports equal to the machine's after the L1 replay, inspects
+  without trace, the follower's restart and the sequencer's.
 - `tests/sequencer/test_e2e.py`: anvil with the rollups-contracts alpha.10 state, the app deployed
   with the withdrawal config, `qa-wallet-genesis` equal to the machine's ranges, `setup`/`run`,
   a deposit and an echoed input through the InputBox, a signed user op through `POST /tx`, batches
@@ -213,7 +279,7 @@ not part of the automated tests (they stop at the machine replay).
 
 ### The devnet kit
 
-`make seq-kit` (after `make seq-host seq-image seq-cycle0`) packs everything an anvil-based test
+`make seq-kit` (after `make seq-host seq-inspect seq-image seq-cycle0`) packs everything an anvil-based test
 needs into one archive, `build/qa-wallet-seq-devnet-linux-<arch>.tar.gz`: the host binaries, the
 devnet template and the cycle-0 image, the host genesis dump (checked byte-equal to the template's
 state range while packing), the `config` range, the rollups-contracts devnet state and addresses,

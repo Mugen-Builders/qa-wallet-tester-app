@@ -26,6 +26,7 @@ DUMP_DIR = ROOT / "third-party" / "cartesi-rollups-contracts-3.0.0-alpha.10-anvi
 IMAGE = Path(os.environ.get("QA_IMAGE", ROOT / ".cartesi" / "image"))
 SEQUENCER_BIN = Path(os.environ.get("QA_SEQUENCER_BIN", ROOT / "seq" / "target" / "release" / "qa-wallet-sequencer"))
 GENESIS_BIN = Path(os.environ.get("QA_GENESIS_BIN", ROOT / "build" / "host" / "qa-wallet-genesis"))
+INSPECT_BIN = Path(os.environ.get("QA_INSPECT_BIN", ROOT / "seq" / "target" / "release" / "qa-wallet-inspect"))
 
 # anvil accounts: 0 deploys, 1 is the user, 9 is the batch submitter (the address in the image)
 PK0 = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
@@ -173,6 +174,29 @@ def genesis_dump(tmp_path_factory):
     return path
 
 
+def wait_ready(service, name: str, tries=300):
+    for _ in range(tries):
+        if service.proc.poll() is not None:
+            pytest.fail(f"{name} exited: " + open(service.log).read()[-4000:])
+        try:
+            status, _, _ = http(service.url + "/readyz")
+            if status == 200:
+                return
+        except (urllib.error.URLError, ConnectionError, OSError):
+            pass
+        time.sleep(0.2)
+    service.proc.kill()
+    pytest.fail(f"{name} never became ready: " + open(service.log).read()[-4000:])
+
+
+def stop(proc):
+    proc.terminate()
+    try:
+        proc.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
 @dataclass
 class Sequencer:
     url: str
@@ -180,6 +204,8 @@ class Sequencer:
     data_dir: str
     log: str
     outputs: list = field(default_factory=list)
+    cmd: list = field(default_factory=list)
+    env: dict = field(default_factory=dict)
 
     def get(self, route: str):
         return http(self.url + route)
@@ -188,6 +214,12 @@ class Sequencer:
         status, _, body = self.get(route)
         assert status == 200, (route, status, body[:300])
         return json.loads(body)
+
+    def restart(self):
+        """Stops the process and runs it again on the same data directory and port."""
+        stop(self.proc)
+        self.proc = subprocess.Popen(self.cmd, env=self.env, stdout=open(self.log, "a"), stderr=subprocess.STDOUT)
+        wait_ready(self, "sequencer")
 
 
 @pytest.fixture(scope="session")
@@ -206,29 +238,71 @@ def sequencer(anvil, deployment, genesis_dump, tmp_path_factory):
                    check=True, env=env, stdout=log, stderr=subprocess.STDOUT)
     port = free_port()
     url = f"http://127.0.0.1:{port}"
-    proc = subprocess.Popen([str(SEQUENCER_BIN), "run", "--http-addr", f"127.0.0.1:{port}", "--data-dir", data_dir,
-                             "--eth-rpc-url", anvil.rpc, "--batch-submitter-private-key", SUBMITTER_KEY,
-                             "--max-batch-open-seconds", "3", "--batch-submitter-idle-poll-interval-ms", "300",
-                             "--batch-submitter-confirmation-depth", "1", "--poll-interval-ms", "300",
-                             "--seconds-per-block", str(SECONDS_PER_BLOCK)],
-                            env=env, stdout=log, stderr=subprocess.STDOUT)
-    s = Sequencer(url, proc, data_dir, str(work / "sequencer.log"))
-    for _ in range(300):
-        if proc.poll() is not None:
-            pytest.fail("sequencer exited: " + open(s.log).read()[-4000:])
-        try:
-            status, _, _ = s.get("/readyz")
-            if status == 200:
-                break
-        except (urllib.error.URLError, ConnectionError, OSError):
-            pass
-        time.sleep(0.2)
-    else:
-        proc.kill()
-        pytest.fail("sequencer never became ready: " + open(s.log).read()[-4000:])
+    cmd = [str(SEQUENCER_BIN), "run", "--http-addr", f"127.0.0.1:{port}", "--data-dir", data_dir,
+           "--eth-rpc-url", anvil.rpc, "--batch-submitter-private-key", SUBMITTER_KEY,
+           "--max-batch-open-seconds", "3", "--batch-submitter-idle-poll-interval-ms", "300",
+           "--batch-submitter-confirmation-depth", "1", "--poll-interval-ms", "300",
+           "--seconds-per-block", str(SECONDS_PER_BLOCK)]
+    proc = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
+    s = Sequencer(url, proc, data_dir, str(work / "sequencer.log"), cmd=cmd, env=env)
+    wait_ready(s, "sequencer")
     yield s
-    proc.terminate()
-    try:
-        proc.wait(timeout=20)
-    except subprocess.TimeoutExpired:
-        proc.kill()
+    stop(s.proc)
+
+
+@dataclass
+class Follower:
+    """qa-wallet-inspect following the sequencer (docs/sequencer.md)."""
+    url: str
+    proc: subprocess.Popen
+    log: str
+    cmd: list
+    env: dict
+    app: str
+
+    def inspect(self, payload: bytes, app: str | None = None):
+        """POSTs a raw inspect payload; returns (status, parsed JSON body or None)."""
+        req = urllib.request.Request(f"{self.url}/inspect/{app or self.app}", data=payload, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            body = e.read()
+            try:
+                return e.code, json.loads(body)
+            except ValueError:
+                return e.code, None
+
+    def reports(self, payload: bytes) -> list:
+        status, body = self.inspect(payload)
+        assert status == 200 and body["status"] == "Accepted" and body["exception_payload"] is None, (status, body)
+        return [bytes.fromhex(r["payload"][2:]) for r in body["reports"]]
+
+    def count(self) -> int:
+        status, body = self.inspect(b"state")
+        return body["processed_input_count"] if status == 200 else -1
+
+    def restart(self):
+        stop(self.proc)
+        self.proc = subprocess.Popen(self.cmd, env=self.env, stdout=open(self.log, "a"), stderr=subprocess.STDOUT)
+        wait_ready(self, "inspect follower")
+
+
+@pytest.fixture(scope="session")
+def follower(sequencer, deployment, tmp_path_factory):
+    if not INSPECT_BIN.is_file():
+        pytest.skip(f"{INSPECT_BIN} missing (make seq-inspect)")
+    work = tmp_path_factory.mktemp("follower")
+    # the engine layout (QA_*) must be the sequencer's: both run on the defaults here
+    env = {k: v for k, v in os.environ.items() if not k.startswith("QA_")}
+    env.update({"QA_LOG": "0", "QA_ENGINE_WORKDIR": str(work)})
+    port = free_port()
+    cmd = [str(INSPECT_BIN), "--sequencer-url", sequencer.url, "--http-addr", f"127.0.0.1:{port}"]
+    log = str(work / "follower.log")
+    proc = subprocess.Popen(cmd, env=env, stdout=open(log, "w"), stderr=subprocess.STDOUT)
+    f = Follower(f"http://127.0.0.1:{port}", proc, log, cmd, env, deployment.app)
+    wait_ready(f, "inspect follower")
+    yield f
+    stop(f.proc)
+    left = [p.name for p in work.iterdir() if p.name != "follower.log"]
+    assert not left, f"the follower left files behind: {left}"

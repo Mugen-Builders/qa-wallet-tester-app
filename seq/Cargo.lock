@@ -3251,6 +3251,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "qawallet-seq-inspect"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "axum",
+ "c-app-engine",
+ "clap",
+ "futures-util",
+ "reqwest",
+ "sequencer-core",
+ "serde",
+ "serde_json",
+ "tar",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"

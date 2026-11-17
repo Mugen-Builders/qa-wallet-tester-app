@@ -84,7 +84,7 @@ The sequencer variant's host binary, fold tests, image, cycle-0 image and end-to
 ## Release artifacts (CI)
 
 `.github/workflows/build-and-release.yml`: `host-tests` runs `make deps seq-deps`, `make host-test`
-and `make seq-host seq-test seq-guest-lib` with g++-14 and Rust 1.95.0, and packages
+and `make seq-host seq-test seq-inspect seq-inspect-test seq-guest-lib` with g++-14 and Rust 1.95.0, and packages
 `qa-wallet-sequencer-linux-amd64.tar.gz` (the host sequencer + `qa-wallet-genesis`);
 `build-and-test` installs emulator `0.22.0`, the matching kernel, xgenext2fs/mksquashfs, Foundry,
 Rust and the Cartesi CLI, runs `cartesi build`, `cartesi hash`, the index check above and the

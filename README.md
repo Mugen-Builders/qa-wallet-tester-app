@@ -49,7 +49,7 @@ No helper scripts: every job is done with the provided tools, and the docs say h
   drive of a snapshot with libcma's `account-driver-reader` and the emulator.
 - [docs/sequencer.md](docs/sequencer.md): the sequencer variant: what differs, the state layout,
   building, genesis for a deployment (cycle-0 image + replaced `config` range), running the
-  host sequencer, user ops, tests and release assets.
+  host sequencer, user ops, inspects against it (`qa-wallet-inspect`), tests and release assets.
 - [docs/sequencer-kit.md](docs/sequencer-kit.md): the README of the devnet kit (`make seq-kit`, a
   release asset): host binaries + images + devnet state, and the anvil walkthrough.
 
@@ -66,10 +66,10 @@ src/lib/*.cpp              the library (app_engine.cpp = the C seam)
 src/main.cpp               classic rollup driver (libcmt): sink, accept/reject yields
 src/seq_main.cpp           sequencer guest driver: device + the scheduler fold (seq/guest) over the seam
 src/genesis_main.cpp       qa-wallet-genesis: the host genesis dump
-seq/                       cargo workspace: guest (the fold as a C staticlib), host (qa-wallet-sequencer)
+seq/                       cargo workspace: guest (the fold as a C staticlib), host (qa-wallet-sequencer), inspect (qa-wallet-inspect, the inspect follower)
 tests/host/                C++ unit tests + mock-rollup end-to-end (`make host-test`)
 tests/machine/             pytest driving the stored templates with the host cartesi-machine (both variants)
-tests/sequencer/           pytest: anvil + host sequencer + machine replay end to end
+tests/sequencer/           pytest: anvil + host sequencer + inspect follower + machine replay end to end
 docs/                      how to build, send inputs, prove the accounts drive and run the sequencer variant
 ```
 
@@ -82,6 +82,7 @@ pytest tests/machine -v            # machine tests of the variant in .cartesi/im
 cartesi run --epoch-length 10 --claim-staging-period 0
 
 make seq-deps seq-host seq-test    # sequencer variant: host binary + fold tests (Rust 1.95, libclang, cmake)
+make seq-inspect seq-inspect-test  # the inspect follower of the host sequencer and its tests
 make seq-image && cartesi hash     # cartesi build -c cartesi-seq.toml (replaces .cartesi/image)
 make seq-cycle0 seq-kit            # cycle-0 image, then build/qa-wallet-seq-devnet-linux-<arch>.tar.gz (docs/sequencer-kit.md)
 pytest tests/machine/test_seq_machine.py tests/sequencer -v
