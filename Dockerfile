@@ -35,6 +35,8 @@ WORKDIR /opt/build/seq
 COPY seq/Cargo.toml seq/Cargo.lock seq/rust-toolchain.toml ./
 COPY seq/guest ./guest
 COPY seq/host ./host
+COPY seq/inspect ./inspect
+
 # APPLICATION_ENGINE_LIB stays unset: the engine symbols are resolved by the riscv64 link below.
 # bindgen parses application-engine.h for riscv64 with the <stdint.h> of seq/guest/bindgen-include.
 RUN BINDGEN_EXTRA_CLANG_ARGS_riscv64gc_unknown_linux_musl="-nostdinc -isystem /opt/build/seq/guest/bindgen-include" \
